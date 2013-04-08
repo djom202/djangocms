@@ -9,7 +9,7 @@ DEBUG = True
 TEMPLATE_DEBUG = DEBUG
 
 ADMINS = (
-    # ('Your Name', 'your_email@domain.com'),
+    ('Ing. Jonathan Olier', 'djom202@gmail.com'),
 )
 
 MANAGERS = ADMINS
@@ -20,7 +20,7 @@ DEFAULT_LANGUAGE = 0
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': os.path.join(PROJECT_DIR, 'mycms.db'),
+        'NAME': os.path.join(PROJECT_DIR, 'django_cms.db'),
     }
 }
 
@@ -96,10 +96,10 @@ TEMPLATE_CONTEXT_PROCESSORS = (
 )
 
 CMS_TEMPLATES = (
-    ('example.html', 'Example Template'),
+    ('template_1.html', 'Template 1'),
 )
 
-ROOT_URLCONF = 'mycmsproject.urls'
+ROOT_URLCONF = 'djangocms.urls'
 
 TEMPLATE_DIRS = (
     os.path.join(PROJECT_DIR, 'templates'),
