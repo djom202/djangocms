@@ -1,0 +1,237 @@
+import logging
+from django.conf import settings
+import hashlib
+import time
+import random
+import re
+import os
+
+from decimal import Decimal, ROUND_DOWN
+from django.core.mail import send_mail
+from django.core.files import File
+from django.core.files.temp import NamedTemporaryFile
+from django.template.defaultfilters import slugify
+from urlparse import urlparse
+import urllib2
+from ctctwspylib import CTCTConnection
+from django.utils.encoding import smart_unicode
+import tempfile
+
+try:
+    from PIL import Image
+except ImportError:
+    try:
+        import Image
+    except ImportError:
+        pass
+
+#### UTLITY METHODS ####
+
+def dictToXmlTokens(dict):
+    results = ""
+    for key in dict.keys():
+        results += '<token name="'+smart_unicode(key)+'">'+smart_unicode(dict[key])+'</token>'
+    return results
+
+def requestToDict(request):
+    results = {'IPADDRESS': requestIpAddress(request)}
+    for key in request.REQUEST.keys():
+        results[smart_unicode(key)] = request.REQUEST[key]
+    return results
+
+def requestIpAddress(request):
+    ipaddress = request.META['REMOTE_ADDR']
+    try:
+        real_ip = request.META['HTTP_X_FORWARDED_FOR']
+        ipaddress = real_ip.split(",")[0]
+    except KeyError:
+        pass
+    return ipaddress
+    
+def fixUrlForS3(url):
+    return url.replace(" ","_").replace("%20","_")
+
+def createLocalFileFromUrl(fileurl):
+    filename = urlparse(fileurl).path.split('/')[-1]
+    debug("filename: "+filename)
+    #filename = fixUrlForS3(urlparse(fileurl).path.split('/')[-1])
+    f = open(tempfile.gettempdir()+os.sep+filename, 'wb')
+    f.write(urllib2.urlopen(fileurl).read())
+    debug("f.name: "+f.name)
+    filename = f.name
+    f.close()
+    return filename
+
+def saveFileFromUrl(fileurl,filefield):
+    
+    if fileurl is None or fileurl=='':
+        return
+    fileurl = fileurl.replace("media2.viewpon.tv","media.viewpon.tv").replace("%2F","/")
+    
+    try:
+        filepath = createLocalFileFromUrl(fileurl)
+        filename = fixUrlForS3(urlparse(fileurl).path.split('/')[-1])
+        file  = open(filepath,"rb")
+        filefield.save(filename, File(file))
+
+        file.close()
+        os.unlink(filepath)
+
+    except urllib2.HTTPError:
+        debug("failed to update file: "+fileurl)
+        pass
+
+def saveImageFromUrl(imageurl,imagefield):
+    
+    if imageurl is None or imageurl=='':
+        return
+    imageurl = imageurl.replace("media2.viewpon.tv","media.viewpon.tv").replace("%2F","/")
+    try:
+        filepath = createLocalFileFromUrl(imageurl)
+        filename = filepath.split(os.sep)[-1]
+
+        # the following exists to determine the file type
+        #im = Image.open(filepath)
+        #imagefilename = slugify(filename)+"."+smart_unicode(im.format).lower()
+        #debug("imagefilename = "+str(imagefilename))
+        
+        file  = open(filepath,"rb")
+        imagefield.save(filename, File(file))
+        #os.unlink(img_temp.name)
+        file.close()
+        os.unlink(filepath)
+    except urllib2.HTTPError:
+        debug("failed to update image due to HTTPError: "+imageurl)
+        pass
+
+def getTextFromNode(node):
+    try:
+        return node.childNodes[0].nodeValue
+    except:
+        return ""
+
+def getText(elementname,node):
+    try:
+        return smart_unicode(node.getElementsByTagName(elementname)[0].childNodes[0].nodeValue)
+    except:
+        return ""
+
+def fmtCurrency(input):
+    return Decimal(smart_unicode(input)).quantize(Decimal('.01'), rounding=ROUND_DOWN)
+
+def addToConstantContactList(list_id, email_address, first_name=None, last_name=None, city=None, postal_code=None):
+
+    ctctapikey = '1c7bb6c6-2385-45cd-b2d4-fed51929af94'
+    ctctapiusername = 'viewpon'
+    ctctapipassword = 'viewpon1'
+    mConnection = CTCTConnection(ctctapikey, ctctapiusername, ctctapipassword)
+    isValid = mConnection.verify_credentials()
+    debug("isValid = "+str(isValid))
+    params = {'email_address': email_address, 'contact_lists': ['http://api.constantcontact.com/ws/customers/'+ctctapiusername+'/lists/'+smart_unicode(list_id)]}
+    
+    if first_name is not None: params['first_name'] = first_name
+    if last_name is not None: params['last_name'] = last_name
+    if city is not None: params['city'] = city
+    if postal_code is not None: params['postal_code'] = postal_code
+    
+    wasCreated = mConnection.create_contact(params)
+    debug("wasCreated = "+str(wasCreated))
+    return wasCreated
+
+def getBaseUrl(request):
+    protocol = "http://"
+    if request.is_secure(): protocol = "https://"
+    return smart_unicode(protocol)+smart_unicode(request.get_host())+smart_unicode(request.path)[:request.path.rfind('/')]
+
+def convertFromXmlToUrl(xml):
+    return smart_unicode(xml).replace('&amp;','&')
+
+def getlogger():
+    logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s %(levelname)s %(message)s',
+                    filename=settings.LOG_FILE,
+                    filemode='w')
+    logger = logging.getLogger()
+    return logger
+
+def debug(msg):
+    logger = getlogger()
+    logger.debug(msg)
+
+def randomHash():
+    return hashlib.md5(smart_unicode(time.time()) +u'|'+  smart_unicode(random.random())).hexdigest()
+    
+def urlify(input):
+    slug = slugify(input)
+    removelist = ["a", "an", "as", "at", "before", "but", "by", "for", "from",
+                  "is", "in", "into", "like", "of", "off", "on", "onto", "per",
+                  "since", "than", "the", "this", "that", "to", "up", "via",
+                  "with"];
+    urlpart = re.sub('\\b(' + '|'.join(removelist) + ')\\b', '', slug)
+    urlpart = re.sub('--','-',urlpart)
+    urlpart = re.sub('--','-',urlpart)
+    urlpart = re.sub('--','-',urlpart)
+    urlpart = re.sub('^-','',urlpart)
+    urlpart = re.sub('-$','',urlpart)
+    return urlpart
+
+def strip_non_numbers(data):
+    """ gets rid of all non-number characters """
+    non_numbers = re.compile('\D')
+    return non_numbers.sub('', data)
+    
+
+def cardLuhnChecksumIsValid(card_number):
+    """ checks to make sure that the card passes a Luhn mod-10 checksum 
+    Taken from: http://code.activestate.com/recipes/172845/
+    
+    """
+    sum = 0
+    num_digits = len(card_number)
+    oddeven = num_digits & 1
+    for count in range(0, num_digits):
+        digit = int(card_number[count])
+        if not (( count & 1 ) ^ oddeven ):
+            digit = digit * 2
+        if digit > 9:
+            digit = digit - 9
+        sum = sum + digit
+    return ( (sum % 10) == 0 )
+
+def sendemail(to_email, from_email, subject, body):
+    send_mail(subject,
+        body, 
+        from_email,
+        [to_email])
+
+def isIos(request):
+    try:
+        return request.META["HTTP_USER_AGENT"].find('like Mac OS X')>-1
+    except:
+        return False
+
+def requestUserAgent(request):
+    try:
+        return request.META["HTTP_USER_AGENT"]
+    except:
+        return None
+
+def getSubdomain(request):
+    subdomain = ""
+    bits = str(request.META['HTTP_HOST']).split('.')
+    request.bits = bits
+    if len(bits) == 3:
+        subdomain = bits[0]
+    return subdomain
+    
+def isSmart(request):
+    return bool(str(getSubdomain(request)).lower().find("smart")>-1)
+    
+def isHotel(request):
+    return bool(str(getSubdomain(request)).lower().find("hotel")>-1)
+    
+def isStaging(request):
+    return True
+    return bool(str(getSubdomain(request)).lower().find("staging")>-1)
+
+

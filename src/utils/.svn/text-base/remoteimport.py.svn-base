@@ -1,0 +1,649 @@
+from utils import debug,getText,saveImageFromUrl,saveFileFromUrl,urlify
+
+import os
+import glob
+import time
+from datetime import timedelta, datetime, date
+from dateutil.relativedelta import *
+import decimal
+import cStringIO
+  
+import urllib2
+from django.utils.encoding import smart_unicode
+from xml.dom.minidom import parseString
+from viewpon.inventory.models import Offer, Category, Partner
+from django.contrib.auth.models import User
+from viewpon.checkout.models import Order, OrderItem, PloneCert
+from viewpon.accounts.models import Address, UserProfile
+from viewpon.utils.states import getStateAbreviation
+from viewpon.paypal.paypal import PayPal
+from viewpon.paypal.models import PaypalTransaction
+from viewpon.settings import CURRENT_PATH
+import subprocess
+from viewpon.utils.utils import sendemail
+
+PLONE_BASE_URL = "http://ec2-50-17-177-45.compute-1.amazonaws.com:8080/watchhalfoff"
+
+#http://www.kestrelcodeworks.com/export_certs.xml
+
+
+##############################
+####### OLD DJANGO
+##############################
+
+def getSegmentsXmlFromDjango():
+    url="http://django.halfoff.tv/export_segments.xml?t="+smart_unicode(time.time())
+    debug(url)
+    req = urllib2.Request(url)
+    response = urllib2.urlopen(req)
+    data = response.read()
+    dom3 = parseString(data)
+    return dom3.getElementsByTagName("segment")
+
+def getCertsXmlFromDjango():
+    url="http://django.halfoff.tv/export_certs.xml?t="+smart_unicode(time.time())
+    debug(url)
+    req = urllib2.Request(url)
+    response = urllib2.urlopen(req)
+    data = response.read()
+    dom3 = parseString(data)
+    return dom3.getElementsByTagName("certificate")
+
+
+##############################
+####### Plone
+##############################
+
+def getSegmentsXmlFromPlone():
+    url="http://www.kestrelcodeworks.com/missing_segments-c.xml"
+    debug(url)
+    req = urllib2.Request(url)
+    response = urllib2.urlopen(req)
+    data = response.read()
+    dom3 = parseString(data)
+    return dom3.getElementsByTagName("segment")
+
+def getSegmentsObjects():
+    results = []
+    for segment in getSegmentsXmlFromPlone():
+        obj = {}
+        obj['name'] = getText("segmentname",segment)
+        obj['slug'] = urlify(getText("segmentname",segment))
+        obj['companyname'] = getText("companyname",segment)
+        obj['segmentuid'] = getText("UID",segment)
+        results.append(obj)
+    return results
+    
+def getUsersXmlFromDjango():
+    url=PLONE_BASE_URL+"/export_customers.xml?t="+smart_unicode(time.time())
+    debug(url)
+    req = urllib2.Request(url)
+    response = urllib2.urlopen(req)
+    data = response.read()
+    dom3 = parseString(data)
+    return dom3.getElementsByTagName("customer")
+
+def getCertsXmlFromPlone():
+    url=PLONE_BASE_URL+"/export_certs.xml?tranid=9HH484004E395263J&t="+smart_unicode(time.time())
+    debug(url)
+    req = urllib2.Request(url)
+    response = urllib2.urlopen(req)
+    data = response.read()
+    dom3 = parseString(data)
+    return dom3.getElementsByTagName("certificate")
+
+def getCertsXmlFromKestrel():
+    url="http://www.kestrelcodeworks.com/export_certs.xml"
+    debug(url)
+    req = urllib2.Request(url)
+    response = urllib2.urlopen(req)
+    data = response.read()
+    dom3 = parseString(data)
+    return dom3.getElementsByTagName("certificate")
+
+def getCertXmlFromPlone(tranid):
+    url=PLONE_BASE_URL+"/export_certs.xml?tranid="+tranid
+    debug(url)
+    req = urllib2.Request(url)
+    response = urllib2.urlopen(req)
+    data = response.read()
+    debug(data)
+    dom3 = parseString(data)
+    return dom3.getElementsByTagName("certificate")
+
+##### PRODUCTS #####
+def importProductsFromDjango():
+    """fetches segment xml from old django site. imports new segments."""
+    debug("importProductsFromDjango")
+    
+    segments = getSegmentsXmlFromDjango()
+    debug("there are "+smart_unicode(len(segments))+" segments.")
+    for segment in segments:
+        #createPartner(segment)
+        createOffer(segment)
+        
+def importProductsFromPlone():
+    """fetches segment xml from old django site. imports new segments."""
+    debug("importProductsFromDjango")
+    
+    segments = getSegmentsXmlFromPlone()
+    debug("there are "+smart_unicode(len(segments))+" segments.")
+    for segment in segments:
+        #createPartner(segment)
+        createOffer(segment)
+
+def createPartner(segmentxml):
+    company_name = getText("companyname",segmentxml)
+    debug("company_name = "+company_name)
+    slug = urlify(company_name)
+    debug("slug = "+slug)
+    # skip if the name exists
+    if Partner.objects.filter(name=company_name).exists(): return
+    if Partner.objects.filter(slug=slug).exists(): return
+    
+    contact_info = getText("contactinfo",segmentxml)
+    #debug("contact_info = "+contact_info)
+    #logourl = getText("logo",segmentxml)
+    #debug("logourl = "+logourl)
+    company_url = getText("companyurl",segmentxml)
+
+    partner = Partner(name=company_name,
+                      slug=slug,
+                      contact_info = contact_info,
+                      company_info = company_name,
+                      company_url = company_url
+    )
+    
+    partner.save()
+    #debug("created partner = "+company_name)
+    
+    #saveImageFromUrl(logourl,partner.logo)
+
+
+def assignOfferToCategory(segmentxml):
+    products_id = getText("products_id",segmentxml)
+    
+    # skip if the product_id does not exists
+    if Offer.objects.filter(products_id=products_id).exists()==False: return
+    offer = Offer.objects.get(products_id=products_id)
+    category_name = getText("categories_name",segmentxml)
+    debug("category_name = "+category_name)
+    categoryList = []
+    
+    if Category.objects.filter(name=category_name):
+        category = Category.objects.get(name=category_name)
+        categoryList.append(category)
+        debug("category found!")
+    offer.categories = categoryList
+    
+
+def createOffer(segmentxml):
+    name = getText("segmentname",segmentxml)[:240]
+    slug = urlify(name)
+    company_name = getText("companyname",segmentxml)
+    segmentuid = getText("UID",segmentxml)
+    
+    # skip if the name exists
+    #if Offer.objects.filter(name=name).exists(): return
+    
+    # skip if the segmentuid exists
+    if Offer.objects.filter(segmentuid=segmentuid).exists(): return
+    
+    while Offer.objects.filter(name=name).exists():
+        name = "1-"+name
+    while Offer.objects.filter(slug=slug).exists():
+        slug = "1-"+slug
+    #if Offer.objects.filter(slug=slug).exists(): return
+
+    if Offer.objects.filter(name=name).exists(): return
+    
+    if Partner.objects.filter(name=company_name).exists()==False: return
+    partner = Partner.objects.get(name=company_name)
+    
+    debug("name = "+name)
+    
+    offer = Offer(name=name,
+                  slug=slug,
+                  partner=partner,
+                  offer_caption=getText("logocaption",segmentxml).replace("<br>"," ")[:249],
+                  description=getText("certificatedetails",segmentxml),
+                  restrictions=getText("restrictions",segmentxml),
+                  online_certificate_details=getText("onlinecertificatedetails",segmentxml)[:54],
+                  online_certificate_restrictions=getText("onlinecertificaterestrictions",segmentxml)[:129],
+                  value=getText("listprice",segmentxml),
+                  price=getText("salesprice",segmentxml),
+                  club_member_sales_price=getText("clubmembersalesprice",segmentxml),
+                  quantity=int(getText("certquantity",segmentxml)),
+                  segmentuid = segmentuid,
+                  is_active = False,
+                  partner_payout = 0
+    )
+    
+    offer.save()
+
+
+##### CUSTOMERS #####
+def importCustomersFromDjango():
+    
+    customers = getUsersXmlFromDjango()
+    debug("there are "+smart_unicode(len(customers))+" customers.")
+    for customerxml in customers:
+        createCustomer(customerxml)
+
+def createCustomer(customerxml):
+    from viewpon.accounts.views import createUser
+    firstname = getText("firstname",customerxml)
+    lastname = getText("lastname",customerxml)
+    email = getText("email",customerxml)
+    phonenumber = getText("phonenumber",customerxml)
+
+    createUser(id=None,firstname=firstname,lastname=lastname,email=email,clubmember=False,phone=phonenumber)
+
+def removeBlankPasswordUsers():
+    debug(User.objects.all().count())
+    users = User.objects.filter(password='')
+    debug(users.count())
+    users.delete()
+    
+def updateUsernames():
+    users = User.objects.filter(first_name='zz',last_name='zz')
+    for user in users:
+        tran = PaypalTransaction.objects.filter(email=user.email)
+        if tran.exists():
+            transaction = tran[0]
+            #debug(transaction.FIRSTNAME)
+            #debug(transaction.LASTNAME)
+            if transaction.FIRSTNAME!='zz': user.first_name = transaction.FIRSTNAME
+            if transaction.LASTNAME!='zz': user.last_name = transaction.LASTNAME
+            user.save()
+
+##### ORDERS #####
+def importOrdersFromDjango():
+    debug("importOrdersFromDjango")
+    
+    certs = getCertsXmlFromPlone()
+    debug("there are "+smart_unicode(len(certs))+" certs.")
+    for cert in certs:
+        order = createOrder(cert)
+        if order: createOrderItem(cert,order)
+
+def importOrderFromPlone(tranid):
+    debug("importOrderFromPlone")
+    
+    certs = getCertXmlFromPlone(tranid)
+    debug("there are "+smart_unicode(len(certs))+" certs.")
+    for cert in certs:
+        order = createOrder(cert)
+        if order: createOrderItem(cert,order)
+
+def createOrder(orderxml):
+    purchase_date = getText("purchase_date",orderxml)
+    purchase_date = datetime.strptime(purchase_date,"%Y-%m-%d %H:%M:%S")
+
+    email = getText("email",orderxml)
+    tranid = getText("tranid",orderxml)
+    
+    # skip if the user is not found
+    if User.objects.filter(email=email).exists()==False: return None
+    
+    order = Order(date = purchase_date,
+                  transaction_id = tranid,
+                  user = User.objects.get(email=email))
+    order.save()
+    return order
+    
+
+
+##### ORDERITEMS #####
+def createOrderItem(orderitemxml, order):
+    segmentuid = getText("segmentuid",orderitemxml)
+
+    # skip if the product is not found
+    if Offer.objects.filter(segmentuid=segmentuid).exists()==False: return
+    offer = Offer.objects.get(segmentuid=segmentuid)
+    
+    orderitem = OrderItem(order = order,
+                          offer = offer,
+                          quantity = getText("certquantity",orderitemxml),
+                          price = getText("certprice",orderitemxml),
+                          value = getText("certvalue",orderitemxml),
+                          description = offer.description,
+                          restrictions = offer.restrictions,
+                          offer_caption = offer.offer_caption,
+                          online_certificate_details = offer.online_certificate_details,
+                          online_certificate_restrictions = offer.online_certificate_restrictions)
+    
+    orderitem.save()
+
+##### ADDRESSES #####
+def updateUserAddress(addressxml):
+    
+    full_name = getText("entry_firstname",addressxml)+" "+getText("entry_lastname",addressxml)
+    address_1 = getText("entry_street_address",addressxml)
+    city = getText("entry_city",addressxml)
+    entry_state = getText("entry_state",addressxml)
+    state = getStateAbreviation(entry_state)
+    if state is None:
+        state = entry_state[:2]
+    zip = getText("entry_postcode",addressxml)[:10]
+    customers_id = getText("customers_id",addressxml)
+
+    # skip if the user is not found
+    if User.objects.filter(id=customers_id).exists()==False: return
+    user = User.objects.get(id=customers_id)
+    
+    # skip if the user is staff
+    if user.is_staff: return
+    
+    # skip if the userprofile is not found
+    if UserProfile.objects.filter(user=user).exists()==False: return
+    
+    debug(user.id)
+    userprofile = UserProfile.objects.get(user=user)
+
+def importCertsFromKestrel():
+    certs = getCertsXmlFromKestrel()
+    debug("there are "+smart_unicode(len(certs))+" certs.")
+    #for cert in certs:
+    #    createCert(cert)
+
+def createCert(certxml):
+    
+    cert = PloneCert(purchase_date=getText("purchase_date",certxml),
+                     vendor=getText("vendor",certxml),
+                     certid=getText("certid",certxml),
+                     segmentuid=getText("segmentuid",certxml),
+                     trantype=getText("trantype",certxml),
+                     certtype=getText("certtype",certxml),
+                     firstname=getText("firstname",certxml),
+                     lastname=getText("lastname",certxml),
+                     email=getText("email",certxml),
+                     phonenumber=getText("phonenumber",certxml),
+                     ipaddress=getText("ipaddress",certxml),
+                     certvalue=getText("certvalue",certxml),
+                     certprice=getText("certprice",certxml),
+                     certquantity=getText("certquantity",certxml),
+                     totalcost=decimal.Decimal('0.00'),
+                     tranid=getText("tranid",certxml)
+                     )
+    cert.save()
+
+
+#### PAYPAL ####
+
+def importPaypalTransactions():
+    paypal = PayPal(debug=False)
+    
+    earliest_timestamp = PaypalTransaction.payments.get_earliest_timestamp()
+    if earliest_timestamp: debug("earliest_timestamp = "+str(earliest_timestamp))
+    
+    latest_timestamp = PaypalTransaction.payments.get_latest_timestamp()
+    if latest_timestamp: debug("latest_timestamp = "+str(latest_timestamp))
+    
+    transactions = paypal.getAllTransactions(startdate=latest_timestamp)
+
+    debug(str(len(transactions)))
+    
+    for tran in transactions:
+        try:
+            if PaypalTransaction.objects.filter(transactionid=tran['TRANSACTIONID']).exists():
+                continue
+            transactiontuple = PaypalTransaction.objects.get_or_create(transactionid = tran['TRANSACTIONID'],
+                                                                  timestamp = tran['TIMESTAMP'],
+                                                                  localdate = tran['LOCALDATE'],
+                                                                  localdatetime = tran['LOCALDATETIME'],
+                                                                  timezone = tran['TIMEZONE'],
+                                                                  amt = tran['AMT'],
+                                                                  feeamt = tran['FEEAMT'],
+                                                                  netamt = tran['NETAMT'])
+    
+            transaction = transactiontuple[0]
+            transaction.timestamp = tran['TIMESTAMP']
+            transaction.localdate = tran['LOCALDATE']
+            transaction.localdatetime = tran['LOCALDATETIME']
+            transaction.timezone = tran['TIMEZONE']
+            transaction.type = tran['TYPE']
+            transaction.email = tran['EMAIL']
+            transaction.name = tran['NAME']
+            transaction.status = tran['STATUS']
+            transaction.amt = tran['AMT']
+            transaction.feeamt = tran['FEEAMT']
+            transaction.netamt = tran['NETAMT']
+            transaction.debug = paypal.debugstate
+            transaction.save()
+        except:
+            pass
+        
+        
+
+def importPaypalTransaction(tran_id):
+    paypal = PayPal(debug=False)
+    
+    transactions = paypal.getTransactionArray(transactionid=tran_id)
+    
+    for tran in transactions:
+        if PaypalTransaction.objects.filter(transactionid=tran['TRANSACTIONID']).exists():
+            continue
+        transactiontuple = PaypalTransaction.objects.get_or_create(transactionid = tran['TRANSACTIONID'],
+                                                              timestamp = tran['TIMESTAMP'],
+                                                              localdate = tran['LOCALDATE'],
+                                                              localdatetime = tran['LOCALDATETIME'],
+                                                              timezone = tran['TIMEZONE'],
+                                                              amt = tran['AMT'],
+                                                              feeamt = tran['FEEAMT'],
+                                                              netamt = tran['NETAMT'])
+
+        transaction = transactiontuple[0]
+        transaction.timestamp = tran['TIMESTAMP']
+        transaction.localdate = tran['LOCALDATE']
+        transaction.localdatetime = tran['LOCALDATETIME']
+        transaction.timezone = tran['TIMEZONE']
+        transaction.type = tran['TYPE']
+        transaction.email = tran['EMAIL']
+        transaction.name = tran['NAME']
+        transaction.status = tran['STATUS']
+        transaction.amt = tran['AMT']
+        transaction.feeamt = tran['FEEAMT']
+        transaction.netamt = tran['NETAMT']
+        transaction.debug = paypal.debugstate
+        transaction.save()
+        transaction.fetchDetails()
+        transaction.refund_order()
+        
+def importPaypalRefunds():
+    paypal = PayPal(debug=False)
+    
+    earliest_timestamp = PaypalTransaction.refunds.get_earliest_timestamp()
+    if earliest_timestamp: debug("earliest_timestamp = "+str(earliest_timestamp))
+    
+    latest_timestamp = PaypalTransaction.refunds.get_latest_timestamp()
+    if latest_timestamp: debug("latest_timestamp = "+str(latest_timestamp))
+    
+    transactions = paypal.getAllRefunds(enddate=earliest_timestamp)
+
+    debug(str(len(transactions)))
+    
+    for tran in transactions:
+        transactiontuple = PaypalTransaction.objects.get_or_create(transactionid = tran['TRANSACTIONID'],
+                                                              timestamp = tran['TIMESTAMP'],
+                                                              localdate = tran['LOCALDATE'],
+                                                              localdatetime = tran['LOCALDATETIME'],
+                                                              timezone = tran['TIMEZONE'],
+                                                              amt = tran['AMT'],
+                                                              feeamt = tran['FEEAMT'],
+                                                              netamt = tran['NETAMT'])
+
+        transaction = transactiontuple[0]
+        transaction.timestamp = tran['TIMESTAMP']
+        transaction.localdate = tran['LOCALDATE']
+        transaction.localdatetime = tran['LOCALDATETIME']
+        transaction.timezone = tran['TIMEZONE']
+        transaction.type = tran['TYPE']
+        transaction.email = tran['EMAIL']
+        transaction.name = tran['NAME']
+        transaction.status = tran['STATUS']
+        transaction.amt = tran['AMT']
+        transaction.feeamt = tran['FEEAMT']
+        transaction.netamt = tran['NETAMT']
+        transaction.debug = paypal.debugstate
+        transaction.save()
+        
+def updatePaypalTranFile():
+    filename = CURRENT_PATH+'/payments.txt'
+
+    for line in open(filename):pass
+    lastline = line
+    lastdate = lastline.split('\t')[0]
+    debug(lastline)
+    debug(lastdate)
+
+    paypal = PayPal(debug=False)
+    transactions = paypal.getAllTransactions(enddate=lastdate, cycles=2)
+    transactions.reverse()
+    debug(str(len(transactions)))
+    f = open(CURRENT_PATH+'/payments.txt', 'a')
+    
+    for tran in transactions:
+        f.write(tran['TIMESTAMP']+'\t'+tran['TRANSACTIONID']+'\n')
+    f.close()
+
+def updatePaypalRefundFile():
+    filename = CURRENT_PATH+'/refunds.txt'
+
+    for line in open(filename):pass
+    lastline = line
+    lastdate = lastline.split('\t')[0]
+    debug(lastline)
+    debug(lastdate)
+
+    paypal = PayPal(debug=False)
+    transactions = paypal.getAllRefunds(enddate=lastdate, cycles=2)
+    transactions.reverse()
+    debug(str(len(transactions)))
+    f = open(filename, 'a')
+    
+    for tran in transactions:
+        f.write(tran['TIMESTAMP']+'\t'+tran['TRANSACTIONID']+'\n')
+    f.close()
+
+def listMissingPaymentTrans():
+    filename = CURRENT_PATH+'/payments.txt'
+    trans = []
+    for line in open(filename):
+        trans.append(line.split('\t')[1].rstrip())
+    
+    transactionids = PaypalTransaction.objects.exclude(type="Refund").values_list("transactionid", flat=True)
+    unmatchedtranids = [tranid for tranid in trans if tranid not in transactionids]
+
+    return '\n'.join(unmatchedtranids)
+
+def listMissingRefundTrans():
+    filename = CURRENT_PATH+'/refunds.txt'
+    trans = []
+    for line in open(filename):
+        trans.append(line.split('\t')[1].rstrip())
+    
+    debug(trans)
+    
+    transactionids = PaypalTransaction.objects.filter(type="Refund").values_list("transactionid", flat=True)
+    debug(transactionids)
+    
+    #return transactionids
+
+    unmatchedtranids = [tranid for tranid in trans if tranid not in transactionids]
+
+    return '\n'.join(unmatchedtranids)
+
+def getPaypalTrans(startdate,duration,refundsOnly=False):
+    enddate = startdate + timedelta(days=duration)
+    debug(startdate)
+    debug(enddate)
+    startdate = startdate.strftime('%Y-%m-%dT%H:%M:%SZ')
+    enddate = enddate.strftime('%Y-%m-%dT%H:%M:%SZ')
+    debug(startdate)
+    debug(enddate)
+    paypal = PayPal(debug=False)
+    transactions = paypal.getAllTransactions(enddate=enddate, startdate=startdate, maxcycles=20, refundsOnly=refundsOnly)
+    transactions.reverse()
+    debug(str(len(transactions)))
+    output = cStringIO.StringIO()
+    for tran in transactions:
+        output.write(tran['TIMESTAMP']+'\t'+tran['TRANSACTIONID']+'\t'+tran['TYPE']+'\t'+tran['STATUS']+'\n')
+    return output.getvalue()
+
+def writePaypalTranFile(startdate,duration,filename,refundsOnly=False):
+        
+    newcontent = getPaypalTrans(startdate,duration,refundsOnly=refundsOnly)
+    # get previous file
+    previouscontent = ""
+    if os.path.isfile(filename):
+        r = open(filename, 'r')
+        previouscontent = r.read()
+        r.close()
+        
+    if newcontent != previouscontent:
+        debug("The transactions have changed for "+filename)
+        mailbody = "The transactions have changed for "+filename
+        sendemail(to_email="brent@kestrelcodeworks.com", from_email="admin@viewpon.tv", subject="Viewpon Tran File Changes", body=mailbody)
+    #else:
+    #    debug("NO CHANGE for "+filename)
+    #    mailbody = "NO CHANGE for "+filename
+    #    sendemail(to_email="brent@kestrelcodeworks.com", from_email="admin@viewpon.tv", subject="Viewpon Tran File: NO CHANGE", body=mailbody)
+        
+        
+    f = open(filename, 'w')
+    f.write(newcontent)
+    f.close()
+    return newcontent
+    
+def getTranWeeks():
+    weeks = []
+    week = date(2011,1,1)
+    while week < date.today():
+        weeks.append(week)
+        week=week+relativedelta(weeks=+1)
+    return weeks
+    
+def getTranMonths():
+    months = []
+    month = date(2011,1,1)
+    while month < date.today():
+        months.append(month)
+        month=month+relativedelta(months=+1)
+    return months
+
+def filename2Date(filename):
+    filedate = filename[filename.rfind(os.sep)+1:filename.rfind(".txt")]
+    return datetime.strptime(str(filedate),"%Y-%m-%d") 
+
+def getLatestPaypalTranFile():
+    weeks = getTranWeeks()
+    dirname = CURRENT_PATH+os.sep+'purchaselogs'+os.sep
+    
+    os.chdir(dirname)
+    files = filter(os.path.isfile, os.listdir(dirname))
+    files = [os.path.join(dirname, f) for f in files] # add path to each file
+    files.sort(key=lambda x: os.path.getmtime(x))
+
+    for week in weeks:
+        if dirname+str(week)+".txt" not in files:
+            return dirname+str(week)+".txt"
+
+    if len(files) > 0:
+        return files[0]
+
+def getLatestPaypalRefundFile():
+    months = getTranMonths()
+    dirname = CURRENT_PATH+os.sep+'refundlogs'+os.sep
+    
+    os.chdir(dirname)
+    files = filter(os.path.isfile, os.listdir(dirname))
+    files = [os.path.join(dirname, f) for f in files] # add path to each file
+    files.sort(key=lambda x: os.path.getmtime(x))
+
+    for month in months:
+        if dirname+str(month)+".txt" not in files:
+            return dirname+str(month)+".txt"
+
+    if len(files) > 0:
+        return files[0]

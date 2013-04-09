@@ -1,0 +1,35 @@
+K 25
+svn:wc:ra_dav:version-url
+V 63
+/svn/kestreldjango/!svn/ver/422/viewpon/trunk/src/viewpon/utils
+END
+__init__.py
+K 25
+svn:wc:ra_dav:version-url
+V 75
+/svn/kestreldjango/!svn/ver/422/viewpon/trunk/src/viewpon/utils/__init__.py
+END
+utils.py
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/svn/kestreldjango/!svn/ver/422/viewpon/trunk/src/viewpon/utils/utils.py
+END
+states.py
+K 25
+svn:wc:ra_dav:version-url
+V 73
+/svn/kestreldjango/!svn/ver/422/viewpon/trunk/src/viewpon/utils/states.py
+END
+context_processors.py
+K 25
+svn:wc:ra_dav:version-url
+V 85
+/svn/kestreldjango/!svn/ver/422/viewpon/trunk/src/viewpon/utils/context_processors.py
+END
+remoteimport.py
+K 25
+svn:wc:ra_dav:version-url
+V 79
+/svn/kestreldjango/!svn/ver/422/viewpon/trunk/src/viewpon/utils/remoteimport.py
+END

@@ -1,0 +1,34 @@
+from viewpon import settings
+from viewpon.cart.cart import get_cart_count
+from viewpon.utils.utils import isIos, getSubdomain, isHotel, isStaging, isSmart
+
+def viewpon(request):
+    """ context processor for the site templates """
+    request.subdomain = getSubdomain(request)
+    request.isHotel = isHotel(request)
+    request.isStaging = isStaging(request)
+    request.isSmart = isSmart(request)
+    #if request.isHotel:
+    #    settings.SITE_ID = 2
+    #else:
+    #    settings.SITE_ID = 1
+    if request.isStaging:
+        baseTemplate = "base-new.html"
+    else:
+        baseTemplate = "base-old.html"
+    
+    return {
+            'site_name': settings.SITE_NAME,
+            'meta_keywords': settings.META_KEYWORDS,
+            'meta_description': settings.META_DESCRIPTION,
+            'analytics_tracking_id': settings.ANALYTICS_TRACKING_ID,
+            'request': request,
+            'showwelcome': False,
+            'autostart': True,
+            'isIos': isIos(request),
+            'isHotel': request.isHotel,
+            'isStaging': request.isStaging,
+            'isSmart': request.isSmart,
+            'baseTemplate': baseTemplate,
+            'cart_count': get_cart_count(request),
+            }

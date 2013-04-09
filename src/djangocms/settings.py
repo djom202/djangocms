@@ -125,3 +125,21 @@ INSTALLED_APPS = (
     'cms.plugins.googlemap',
     'sekizai',
 )
+
+
+DEFAULT_FILE_STORAGE = 'utils.s3utils.MediaRootS3BotoStorage'
+AWS_ACCESS_KEY_ID = 'AKIAIU3QA45MN64DG4LA'
+AWS_SECRET_ACCESS_KEY = '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'
+AWS_STORAGE_BUCKET_NAME = 'media.garoglio.com'
+AWS_S3_SECURE_URLS = True
+AWS_QUERYSTRING_AUTH = False
+AWS_S3_CUSTOM_DOMAIN = 's3.amazonaws.com/media.garoglio.com'
+AWS_PRELOAD_METADATA = True
+AWS_S3_FILE_OVERWRITE = False
+
+MEDIA_URL = 'https://s3.amazonaws.com/media.garoglio.com/media/'
+STATIC_URL = 'https://s3.amazonaws.com/media.garoglio.com/static/'
+ADMIN_MEDIA_PREFIX = 'https://s3.amazonaws.com/media.garoglio.com/static/admin/'
+STATIC_ROOT = '/static/'
+
+STATICFILES_STORAGE = 'utils.s3utils.StaticRootS3BotoStorage'
